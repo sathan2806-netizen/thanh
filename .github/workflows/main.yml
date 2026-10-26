@@ -1,4 +1,3 @@
-
 name: Build Android APK
 
 on:
@@ -15,10 +14,34 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Extract source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f AutoAppManager-Restart-Fixed.zip
+          mkdir -p extracted
+          unzip -q -o AutoAppManager-Restart-Fixed.zip -d extracted
+          echo "Source extracted successfully"
+
+      - name: Find Android project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
+          if [ -z "$file" ]; then
+            echo "ERROR: Android Gradle project not found in ZIP"
+            find extracted -maxdepth 5 -type f
+            exit 1
+          fi
+          dir=$(dirname "$file")
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "Android project found at $dir"
+
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -34,32 +57,29 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
-      - name: Find Android project
-        id: project
+      - name: Build APK
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.dir }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Collect APK
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
-          file=$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path '*/.gradle/*' -print -quit)
-          if [ -z "$file" ]; then
-            echo "ERROR: settings.gradle not found"
-            find . -maxdepth 4 -type f | head -100
-            exit 1
-          fi
-          dir=$(dirname "$file")
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
-          echo "Project found: $dir"
-
-      - name: Build debug APK
-        shell: bash
-        run: |
-          cd "${"{ steps.project.outputs.dir }"}"
-          gradle --no-daemon --stacktrace assembleDebug
+          mkdir -p apk-output
+          find extracted -type f -path '*/build/outputs/apk/debug/*.apk' -exec cp {} apk-output/ \;
+          test -n "$(find apk-output -name '*.apk' -print -quit)"
+          ls -lh apk-output/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AutoAppManager-debug-APK
-          path: '**/build/outputs/apk/debug/*.apk'
+          name: AutoAppManager-APK
+          path: apk-output/*.apk
           if-no-files-found: error
           retention-days: 30
-  
